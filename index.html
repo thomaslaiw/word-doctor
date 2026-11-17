@@ -1198,6 +1198,160 @@ function parseJsonLoose(txt) {
   return JSON.parse(t);
 }
 
+
+/* =======================================================================
+   SENTENCE CORPUS — Simple English Wikipedia (CC BY-SA 3.0)
+
+   Design note. The earlier prompt asked the model to INVENT a wrong
+   sentence, and both DeepSeek and Grok produced items where the "error"
+   was not really an error. This pipeline inverts that: start from a real
+   published sentence, then corrupt exactly one word. The base sentence is
+   therefore guaranteed to be correct English, and the only thing that can
+   be wrong is the single change that was made.
+
+   Simple English Wikipedia is used because:
+     - it is published, professionally written prose, not machine output
+     - it is pitched at roughly P5 reading level
+     - its licence (CC BY-SA) permits reuse, unlike a publisher's text
+     - its API sends CORS headers, so a browser can call it directly
+   ======================================================================= */
+
+const WIKI_API = "https://simple.wikipedia.org/w/api.php";
+const WIKI_CACHE_KEY = "wd_corpus_v1";
+
+// Topics that are safe and useful for a primary lesson. The app only ever
+// reads articles from this list, never a raw keyword search — searching
+// "stormy" on an open wiki returns things that do not belong in a classroom.
+const SAFE_TOPICS = [
+  "Harbour", "Lighthouse", "Weather", "Rain", "Wind", "Storm", "Cloud",
+  "River", "Sea", "Beach", "Mountain", "Forest", "Garden", "Farm",
+  "Village", "City", "Market", "School", "Library", "Hospital",
+  "Bridge", "Road", "Railway", "Bicycle", "Car", "Ship", "Boat", "Airplane",
+  "Bread", "Milk", "Soup", "Rice", "Fruit", "Vegetable", "Kitchen", "Fire",
+  "Water", "Ice", "Snow", "Sun", "Moon", "Star", "Bird", "Fish", "Horse",
+  "Dog", "Cat", "Elephant", "Butterfly", "Tree", "Flower", "Music", "Dance",
+  "Football", "Swimming", "Clock", "Money", "Letter", "Newspaper", "Telephone"
+];
+
+function loadCache() {
+  try { return JSON.parse(localStorage.getItem(WIKI_CACHE_KEY) || "{}"); }
+  catch (e) { return {}; }
+}
+function saveCache(c) {
+  try { localStorage.setItem(WIKI_CACHE_KEY, JSON.stringify(c)); } catch (e) {}
+}
+
+function wikiUrl(title) {
+  return WIKI_API + "?action=query&prop=extracts&explaintext=1&redirects=1" +
+         "&format=json&origin=*&titles=" + encodeURIComponent(title);
+}
+
+async function fetchArticle(title) {
+  const cache = loadCache();
+  if (cache[title]) return cache[title];
+
+  const res = await fetch(wikiUrl(title));
+  if (!res.ok) throw new Error("wiki " + res.status);
+  const data = await res.json();
+  const pages = (data.query && data.query.pages) || {};
+  let text = "";
+  for (const k in pages) {
+    if (pages[k].extract) { text = pages[k].extract; break; }
+  }
+  if (text) {
+    cache[title] = text;
+    saveCache(cache);
+  }
+  return text;
+}
+
+// Pull the sentences out of an article that contain the target word.
+function sentencesWith(text, word) {
+  const out = [];
+  const parts = text.split(/(?<=[.!?])\s+/);
+  const re = new RegExp("\\b" + word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b", "i");
+  for (let i = 0; i < parts.length; i++) {
+    const s = parts[i].trim();
+    if (!re.test(s)) continue;
+    const words = s.split(/\s+/).length;
+    // keep sentences a P5 learner can actually read
+    if (words >= 6 && words <= 26) out.push(s);
+  }
+  return out;
+}
+
+// Walk the safe topic list until we have a real sentence for each word.
+// Returns { word: {sentence, topic} } for whatever we could find.
+async function gatherCorpus(words) {
+  const found = {};
+  const wanted = words.slice();
+  let checked = 0;
+
+  for (let ti = 0; ti < SAFE_TOPICS.length && wanted.length > 0 && checked < 40; ti++) {
+    const topic = SAFE_TOPICS[ti];
+    let text = "";
+    try {
+      text = await fetchArticle(topic);
+      checked++;
+    } catch (e) {
+      // rate limited or offline - stop marching through topics
+      break;
+    }
+    if (!text) continue;
+
+    for (let wi = wanted.length - 1; wi >= 0; wi--) {
+      const w = wanted[wi];
+      const hits = sentencesWith(text, w);
+      if (hits.length) {
+        found[w] = { sentence: hits[0], topic: topic };
+        wanted.splice(wi, 1);
+      }
+    }
+    // be a good citizen: small gap between article fetches
+    if (wanted.length) await new Promise(r => setTimeout(r, 350));
+  }
+  return found;
+}
+
+/* ---------- self-check ----------
+   The model proposes an item; a second call is asked to check it against the
+   source sentence. Items that fail are dropped rather than shipped.        */
+async function selfCheck(items, key) {
+  const checkPrompt =
+    "You are checking teaching items for factual and linguistic accuracy.\n" +
+    "For EACH item decide: is the stated answer actually correct, and is the 'why' explanation true?\n" +
+    "Reject an item if:\n" +
+    "- the explanation states something false about English\n" +
+    "- the 'wrong' word is not actually wrong in that sentence\n" +
+    "- the 'correct' item has a real error\n" +
+    "- the Chinese does not match the English\n" +
+    "Reply with JSON only: {\"keep\":[<indices of acceptable items>]} and nothing else.\n\n" +
+    "Items:\n" + JSON.stringify(items, null, 1);
+
+  const res = await fetch(DEEPSEEK_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": "Bearer " + key },
+    body: JSON.stringify({
+      model: "deepseek-chat",
+      messages: [{ role: "user", content: checkPrompt }],
+      temperature: 0,
+      max_tokens: 500,
+      response_format: { type: "json_object" },
+    }),
+  });
+  if (!res.ok) return items;                 // if the check fails, do not block the lesson
+  const payload = await res.json();
+  try {
+    const verdict = JSON.parse(payload.choices[0].message.content);
+    const keep = verdict.keep;
+    if (!Array.isArray(keep)) return items;
+    const filtered = items.filter((_, i) => keep.indexOf(i) !== -1);
+    return filtered.length ? filtered : items;
+  } catch (e) {
+    return items;
+  }
+}
+
 const ITEM_RULES = `You are an English-language item writer for Hong Kong primary schools.
 
 You will be given English text scanned from a textbook, worksheet or storybook page.
@@ -1245,61 +1399,148 @@ async function buildFromText() {
     return;
   }
   if (!key) {
-    setStatus("No key saved. Press Restart, or reload the page to sign in again.", "err");
+    setStatus("No key saved. Reload the page and sign in again.", "err");
     return;
   }
 
   const btn = document.getElementById("buildBtn");
   btn.disabled = true;
-  setStatusWork("Writing the rounds from this text\u2026");
 
   try {
-    const userMsg =
-      "Learner level: P5 (Hong Kong primary).\nWrite exactly 6 items.\n\n" +
-      "Text scanned from the material:\n-----\n" + text + "\n-----\n\nReturn the JSON now.";
-
-    let raw;
-
-    // DeepSeek does both jobs: it read the page, and it writes the items.
-    const res = await fetch(DEEPSEEK_URL, {
+    /* ---- step 1: which easy words did the page give us? ---- */
+    setStatusWork("Picking easy words from the page\u2026");
+    const wordRes = await fetch(DEEPSEEK_URL, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": "Bearer " + key
-      },
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + key },
       body: JSON.stringify({
         model: "deepseek-chat",
-        messages: [
-          { role: "system", content: ITEM_RULES },
-          { role: "user", content: userMsg }
-        ],
-        temperature: 0.8,
-        max_tokens: 4000,
-        response_format: { type: "json_object" }
-      })
+        messages: [{
+          role: "user",
+          content:
+            "From this English text, list 14 easy vocabulary words a P5 learner should practise.\n" +
+            "Prefer concrete nouns, common verbs and simple adjectives that appear in the text.\n" +
+            "Reply with JSON only: {\"words\":[\"word1\",\"word2\"]}\n\n" +
+            "Text:\n" + text,
+        }],
+        temperature: 0.3,
+        max_tokens: 300,
+        response_format: { type: "json_object" },
+      }),
+    });
+    if (wordRes.status === 401) throw new Error("the key was rejected (401). Check the key.");
+    if (wordRes.status === 402) throw new Error("no credit left on this key (402).");
+    if (!wordRes.ok) throw new Error("the service replied " + wordRes.status);
+
+    let words = [];
+    try {
+      const w = JSON.parse((await wordRes.json()).choices[0].message.content);
+      words = (w.words || []).filter(function (x) { return typeof x === "string" && /^[a-z\- ]{3,}$/i.test(x); });
+    } catch (e) {}
+    if (!words.length) throw new Error("no vocabulary could be picked from this text");
+
+    /* ---- step 2: find a real published sentence for each word ---- */
+    setStatusWork("Looking for real sentences in Simple Wikipedia\u2026");
+    const corpus = await gatherCorpus(words.slice(0, 14));
+    const foundWords = Object.keys(corpus);
+    if (!foundWords.length) {
+      setStatus("Could not find published sentences for these words. Check the internet connection, or type a different page.", "err");
+      return;
+    }
+
+    /* ---- step 3 + 4: make the item, wrong or correct, from the real sentence ---- */
+    const target = Math.min(6, foundWords.length);
+    setStatusWork("Writing " + target + " rounds\u2026");
+    const sourceList = foundWords.slice(0, 6).map(function (w) {
+      return { word: w, sentence: corpus[w].sentence, source: "Simple English Wikipedia: " + corpus[w].topic };
     });
 
-    if (res.status === 401) throw new Error("the key was rejected (401). Check the key.");
-    if (res.status === 402) throw new Error("no credit left on this key (402).");
-    if (!res.ok) throw new Error("the service replied " + res.status);
+    const genPrompt =
+      "You write Word Doctor items for Hong Kong P5 English learners.\n\n" +
+      "You are given REAL published sentences, one per target word. Each base sentence is correct.\n" +
+      "For each sentence produce ONE item, choosing one of two kinds:\n\n" +
+      "  KIND A (make it wrong): replace the target word with a REAL English word that is WRONG here.\n" +
+      "  KIND B (nothing wrong): keep the sentence exactly as published.\n\n" +
+      "Produce 4 items of KIND A and 2 of KIND B.\n\n" +
+      "HARD RULES - an item is rejected if any of these is broken:\n" +
+      "1. Every option must be a REAL English word or phrase. Never invent a word such as\n" +
+      "   'harboury' or 'carelessful'. No made-up endings.\n" +
+      "2. The four options must be four different DIAGNOSES of the sentence, not four spellings\n" +
+      "   of the same word. Example of good options:\n" +
+      "     A. Nothing is wrong.\n" +
+      "     B. It should describe a place for ships, not a person.\n" +
+      "     C. It is the wrong word family for this position.\n" +
+      "     D. It is too weak a word for this meaning.\n" +
+      "3. For KIND B the correct option is 'Nothing is wrong.' and the AI comment must say the\n" +
+      "   sentence is correct and explain why. It must NOT say there is a spelling problem.\n" +
+      "4. For KIND A the sentence written must contain the wrong word, wrapped in\n" +
+      "   <span class='hl'>word</span>. Everything else in the sentence stays as published.\n" +
+      "5. Keep the published sentence intact apart from the one changed word. Do not rewrite it.\n" +
+      "6. aiEn: SIMPLE English, short sentences (max ~14 words).\n" +
+      "7. aiZh: standard written TRADITIONAL Chinese (shumianyu). Use Traditional characters only:\n" +
+      "   \u9019\u500b \u6c92\u6709 \u70ba\u4ec0\u9ebc \u662f \u5b78\u751f \u8aaa \u6b63\u78ba. Never Simplified (no \u8fd9 \u4e2a \u6ca1 \u4e3a \u4ec0).\n" +
+      "   Never Cantonese particles: \u5514 \u5605 \u5580 \u5599 \u54cb \u4f62 \u7747 \u8b58 \u651e \u4ffe \u5187.\n" +
+      "8. whyEn / whyZh address the class directly. Never say 'the student'.\n" +
+      "9. Before answering, test your own item: read the sentence as a learner. If the wrong word\n" +
+      "   is not really wrong, change your answer to KIND B.\n\n" +
+      "Reply with JSON only:\n" +
+      "{\"items\":[{\"word\":\"\",\"typeEn\":\"\",\"sentence\":\"\",\"qEn\":\"\",\"opts\":[{\"en\":\"\"},{\"en\":\"\"},{\"en\":\"\"},{\"en\":\"\"}],\"key\":0,\"aiEn\":\"\",\"aiZh\":\"\",\"whyEn\":\"\",\"whyZh\":\"\",\"kind\":\"A\"}]}\n\n" +
+      "Sentences:\n" + JSON.stringify(sourceList, null, 1);
 
-    const payload = await res.json();
-    const choice = (payload.choices && payload.choices[0]) || {};
-    const txt = (choice.message && choice.message.content) || "";
-    if (!txt.trim()) {
-      throw new Error(choice.finish_reason === "length"
-        ? "the model ran out of room before answering. Try again."
-        : "the model returned nothing. Try again.");
+    const genRes = await fetch(DEEPSEEK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + key },
+      body: JSON.stringify({
+        model: "deepseek-chat",
+        messages: [{ role: "user", content: genPrompt }],
+        temperature: 0.7,
+        max_tokens: 4000,
+        response_format: { type: "json_object" },
+      }),
+    });
+    if (!genRes.ok) throw new Error("the service replied " + genRes.status);
+
+    let raw;
+    try {
+      raw = parseJsonLoose((await genRes.json()).choices[0].message.content);
+    } catch (e) {
+      throw new Error("the model did not return usable JSON. Try again.");
     }
-    raw = parseJsonLoose(txt);
-    const items = (raw.items || []).filter(function (it) {
+
+    // Repair pass. The model sometimes returns the sentence without the
+    // highlight wrapper, which leaves the class unable to see the target word.
+    (raw.items || []).forEach(function (it) {
+      if (!it || typeof it.sentence !== "string") return;
+      if (it.sentence.indexOf("class='hl'") !== -1 ||
+          it.sentence.indexOf('class="hl"') !== -1) return;
+
+      let target = (it.word || "").trim();
+      // KIND B may leave `word` empty; try to recover it from the answer text
+      if (!target) {
+        const m = (it.qEn || "").match(/word\s+["']?([A-Za-z][A-Za-z\- ]{1,24})["']?/i);
+        if (m) target = m[1].trim();
+      }
+      if (!target) return;
+
+      const re = new RegExp("\\b(" + target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ")\\b", "i");
+      if (re.test(it.sentence)) {
+        it.sentence = it.sentence.replace(re, "<span class='hl'>$1</span>");
+      }
+    });
+
+    let items = (raw.items || []).filter(function (it) {
       return it && it.word && Array.isArray(it.opts) && it.opts.length === 4 &&
              typeof it.key === "number" && it.key >= 0 && it.key <= 3 &&
-             it.sentence && it.qEn && it.aiEn && it.aiZh && it.whyEn && it.whyZh;
-    }).slice(0, 6);
+             it.sentence && it.qEn && it.aiEn && it.aiZh && it.whyEn && it.whyZh &&
+             it.sentence.indexOf("class='hl'") !== -1;
+    });
 
     if (!items.length) throw new Error("no usable rounds came back. Try again.");
 
+    /* ---- step 5: self-check, drop anything that does not hold up ---- */
+    setStatusWork("Checking its own answers\u2026");
+    items = await selfCheck(items, key);
+
+    items = items.slice(0, 6);
     ITEMS.length = 0;
     items.forEach(function (it) { ITEMS.push(it); });
 
