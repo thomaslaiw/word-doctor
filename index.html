@@ -215,9 +215,109 @@
     .wrap{padding:14px 14px 40px;}
     .card{padding:20px 18px;}
   }
+  /* ---------- password gate ---------- */
+  #gate{
+    position:fixed;inset:0;background:#f4f6f9;z-index:999;
+    display:flex;align-items:center;justify-content:center;
+  }
+  #gate .box{
+    background:#fff;border:1px solid var(--line);border-radius:12px;
+    padding:34px 36px;width:min(420px,92vw);text-align:center;
+    box-shadow:0 2px 14px rgba(27,36,48,.06);
+  }
+  #gate h1{font-size:23px;margin:0 0 4px;color:var(--accent);letter-spacing:-.3px;}
+  #gate p{font-size:14.5px;color:var(--muted);margin:0 0 20px;}
+  #gate input{
+    width:100%;padding:13px 15px;font-size:16px;font-family:inherit;
+    border:1.5px solid var(--line);border-radius:8px;text-align:center;
+    letter-spacing:2px;
+  }
+  #gate input:focus{outline:none;border-color:var(--accent);}
+  #gate button{
+    width:100%;margin-top:12px;background:var(--accent);color:#fff;border:0;
+    border-radius:8px;padding:13px;font-size:16px;font-weight:600;
+    cursor:pointer;font-family:inherit;
+  }
+  #gate .err{color:var(--bad);font-size:13.5px;margin-top:10px;min-height:18px;}
+
+  /* ---------- scanner ---------- */
+  .scanwrap{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
+  @media (max-width:820px){.scanwrap{grid-template-columns:1fr;}}
+  .videobox{
+    position:relative;background:#111;border-radius:10px;overflow:hidden;
+    aspect-ratio:4/3;display:flex;align-items:center;justify-content:center;
+  }
+  .videobox video{width:100%;height:100%;object-fit:cover;display:block;}
+  .videobox .ph{color:#7d8a99;font-size:14px;text-align:center;padding:20px;}
+  .thumbs{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;}
+  .thumbs img{
+    width:76px;height:57px;object-fit:cover;border-radius:6px;
+    border:1.5px solid var(--line);
+  }
+  .scanrow{margin-top:14px;}
+  textarea.txtin{
+    width:100%;min-height:150px;padding:12px 14px;font:15px/1.5 Consolas,monospace;
+    border:1.5px solid var(--line);border-radius:8px;resize:vertical;
+  }
+  textarea.txtin:focus{outline:none;border-color:var(--accent);}
+  .status{
+    font-size:14px;color:var(--muted);margin-top:10px;min-height:20px;
+  }
+  .status.work{color:var(--accent);}
+  .status.err{color:var(--bad);}
+  .spinner{
+    display:inline-block;width:13px;height:13px;border:2px solid #c3d3e0;
+    border-top-color:var(--accent);border-radius:50%;
+    animation:spin .7s linear infinite;vertical-align:-2px;margin-right:7px;
+  }
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .keyrow{
+    display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap;
+    font-size:13.5px;color:var(--muted);
+  }
+  .keyrow input{
+    flex:1;min-width:180px;padding:8px 11px;font:13.5px Consolas,monospace;
+    border:1px solid var(--line);border-radius:6px;
+  }
+  .keyrow button{
+    padding:8px 14px;border:1px solid var(--line);background:#fff;
+    border-radius:6px;font:inherit;font-size:13.5px;cursor:pointer;
+  }
+  .tagline{
+    display:inline-block;background:var(--accent-soft);color:var(--accent);
+    font-size:12px;font-weight:700;padding:2px 8px;border-radius:4px;
+    text-transform:uppercase;letter-spacing:.5px;
+  }
 </style>
 </head>
 <body>
+
+<!-- ============ PASSWORD GATE ============ -->
+<div id="gate">
+  <div class="box">
+    <h1>Word Doctor</h1>
+    <p>Sign in to build rounds from a scanned page.</p>
+
+    <input id="gatePw" type="password" placeholder="class password"
+           autocomplete="off"
+           onkeydown="if(event.key==='Enter')document.getElementById('gateKey').focus()">
+    <input id="gateKey" type="password" placeholder="DeepSeek API key (sk-...)"
+           autocomplete="off" style="margin-top:10px;letter-spacing:0;text-align:left;
+           font-family:Consolas,monospace;font-size:14px"
+           onkeydown="if(event.key==='Enter')tryGate()">
+    <button onclick="tryGate()">Open</button>
+
+    <p style="margin:14px 0 0;font-size:12.5px;line-height:1.5;text-align:left;">
+      The key is used only by this page, in your own browser, to write rounds.
+      It is never sent to us and never stored on any server.
+      Get a key at <a href="https://platform.deepseek.com/api_keys" target="_blank"
+      rel="noopener" style="color:var(--accent)">platform.deepseek.com</a>.
+    </p>
+
+    <div class="err" id="gateErr"></div>
+  </div>
+</div>
+
 <div class="wrap">
 
   <!-- ============ TOP BAR ============ -->
@@ -251,6 +351,10 @@
     </p>
 
     <div class="modes">
+      <button class="mode" onclick="openScanner()">
+        <h3>Scan a page <span class="tagline">new</span></h3>
+        <p>Photograph any English page and build a fresh set of rounds from it</p>
+      </button>
       <button class="mode" onclick="startActivity('full')">
         <h3>Full session</h3>
         <p>6 rounds · about 35 minutes</p>
@@ -265,6 +369,50 @@
       <b>For the teacher — not for projection.</b> Learners need no devices: the class answers aloud or on
       mini-whiteboards, and you record the decision on screen. The AI panel stays hidden until you choose to show it.
       <span style="display:block;margin-top:6px;color:#8a97a5;">Full session = the lesson. Short demo = 5 minutes, for the presentation.</span>
+    </div>
+  </div>
+
+  <!-- ============ SCREEN: SCANNER ============ -->
+  <div class="card" id="screenScan" style="display:none">
+    <div class="roundhead"><span class="rn">Build rounds from a page</span></div>
+    <h1 style="font-size:26px;margin:8px 0 4px;letter-spacing:-.3px;">Scan the material</h1>
+    <p style="font-size:16px;color:var(--muted);margin:0 0 18px;">
+      Point the camera at a page of English and take up to three pictures. The words are read
+      from the page, then six rounds are written from them. You can edit the text before building.
+    </p>
+
+    <div class="scanwrap">
+      <div>
+        <div class="videobox" id="videobox">
+          <div class="ph" id="videoPh">Camera off</div>
+          <video id="cam" playsinline muted style="display:none"></video>
+        </div>
+        <div class="thumbs" id="thumbs"></div>
+      </div>
+      <div>
+        <div class="scanrow">
+          <textarea class="txtin" id="scanText" placeholder="Scanned words will appear here. You can type or correct them too."></textarea>
+        </div>
+        <div class="status" id="scanStatus"></div>
+      </div>
+    </div>
+
+    <div class="bar">
+      <button class="primary" id="camBtn" onclick="toggleCam()">Start camera</button>
+      <button class="ghost" id="shotBtn" onclick="takeShot()" style="display:none">Take picture</button>
+      <button class="ghost" id="ocrBtn" onclick="runOCR()" style="display:none">Read the words</button>
+      <button class="ghost" onclick="backToStart()">Back</button>
+    </div>
+
+    <div class="bar" style="border-top:1px solid var(--line);padding-top:16px;margin-top:18px;">
+      <button class="primary" id="buildBtn" onclick="buildFromText()">Build the rounds</button>
+      <span class="hint">Six rounds are written from the text above.</span>
+    </div>
+
+    <div class="keyrow">
+      <span>API key:</span>
+      <span id="keyState">checking…</span>
+      <button onclick="forgetKey()">Forget key</button>
     </div>
   </div>
 
@@ -501,6 +649,7 @@ function startActivity(m) {
   queue = m === "demo" ? [ITEMS[1], ITEMS[2], ITEMS[4]] : ITEMS.slice();
   idx = 0; score = 0; log = []; t0 = Date.now();
   $("screenStart").style.display = "none";
+  $("screenScan").style.display = "none";
   $("screenEnd").style.display = "none";
   $("screenRound").style.display = "";
   $("meter").style.display = "flex";
@@ -676,6 +825,283 @@ function updatePace() {
   const perRound = mode === "demo" ? 1.6 : 5.5;
   const left = (queue.length - idx) * perRound;
   $("pace").textContent = `~${Math.round(left)} min left`;
+}
+
+
+/* =======================================================================
+   PASSWORD GATE + SCANNER + SERVER-BUILT ROUNDS
+   ======================================================================= */
+
+
+
+
+const PW_SHA256 = '7c123e5056aeaaa3746eed09e0aee54df309a44d8f41cbf5678a2c3b38adee45';
+
+async function sha256hex(str) {
+  const buf = new TextEncoder().encode(str);
+  const dig = await crypto.subtle.digest("SHA-256", buf);
+  return Array.from(new Uint8Array(dig)).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+function getKey() {
+  return localStorage.getItem("wd_key") || "";
+}
+
+async function tryGate() {
+  const pw  = document.getElementById("gatePw").value.trim();
+  const key = document.getElementById("gateKey").value.trim();
+  const err = document.getElementById("gateErr");
+
+  if ((await sha256hex(pw)) !== PW_SHA256) {
+    err.textContent = "Wrong class password.";
+    return;
+  }
+  if (!/^sk-[A-Za-z0-9]{16,}$/.test(key)) {
+    err.textContent = "That does not look like a DeepSeek key (it starts with sk-).";
+    return;
+  }
+
+  localStorage.setItem("wd_key", key);
+  sessionStorage.setItem("wd_open", "1");
+  document.getElementById("gate").style.display = "none";
+  paintKeyState();
+}
+
+function paintKeyState() {
+  const el = document.getElementById("keyState");
+  if (!el) return;
+  const k = getKey();
+  el.textContent = k ? "key saved (" + k.slice(0, 6) + "\u2026" + k.slice(-4) + ")" : "no key saved";
+  el.style.color = k ? "var(--good)" : "var(--warn)";
+}
+
+/* ---------- key state ---------- */
+function forgetKey() {
+  localStorage.removeItem("wd_key");
+  paintKeyState();
+  setStatus("Key removed from this browser.", "");
+}
+
+/* ---------- camera ---------- */
+let stream = null;
+let shots = [];
+
+function openScanner() {
+  document.getElementById("screenStart").style.display = "none";
+  document.getElementById("screenScan").style.display = "";
+  document.getElementById("scanStatus").textContent = "";
+  paintKeyState();
+}
+
+function backToStart() {
+  stopCam();
+  document.getElementById("screenScan").style.display = "none";
+  document.getElementById("screenStart").style.display = "";
+}
+
+async function toggleCam() {
+  if (stream) { stopCam(); return; }
+  const video = document.getElementById("cam");
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1440 } }
+    });
+    video.srcObject = stream;
+    video.style.display = "block";
+    document.getElementById("videoPh").style.display = "none";
+    document.getElementById("camBtn").textContent = "Stop camera";
+    document.getElementById("shotBtn").style.display = "";
+  } catch (e) {
+    setStatus("Camera not available. You can type or paste the text instead.", "err");
+  }
+}
+
+function stopCam() {
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  const video = document.getElementById("cam");
+  video.style.display = "none";
+  const ph = document.getElementById("videoPh");
+  if (ph) ph.style.display = "";
+  const cb = document.getElementById("camBtn");
+  if (cb) cb.textContent = "Start camera";
+  const sb = document.getElementById("shotBtn");
+  if (sb) sb.style.display = "none";
+}
+
+function takeShot() {
+  const video = document.getElementById("cam");
+  if (!video.videoWidth) return;
+  const c = document.createElement("canvas");
+  c.width = video.videoWidth;
+  c.height = video.videoHeight;
+  c.getContext("2d").drawImage(video, 0, 0);
+  const url = c.toDataURL("image/jpeg", 0.9);
+  shots.push(url);
+  const img = document.createElement("img");
+  img.src = url;
+  document.getElementById("thumbs").appendChild(img);
+  document.getElementById("ocrBtn").style.display = "";
+  setStatus(shots.length + ' picture(s) ready. Press Read the words.', '');
+}
+
+function setStatus(msg, cls) {
+  const el = document.getElementById("scanStatus");
+  el.className = "status " + (cls || "");
+  el.innerHTML = msg;
+}
+
+function setStatusWork(msg) {
+  setStatus('<span class="spinner"></span>' + msg, "work");
+}
+
+/* ---------- OCR (tesseract.js, loaded on demand) ---------- */
+function loadTesseract() {
+  return new Promise((resolve, reject) => {
+    if (window.Tesseract) return resolve(window.Tesseract);
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+    s.onload = () => resolve(window.Tesseract);
+    s.onerror = () => reject(new Error("could not load the reader"));
+    document.head.appendChild(s);
+  });
+}
+
+async function runOCR() {
+  if (!shots.length) { setStatus("Take a picture first.", "err"); return; }
+  setStatusWork("Loading the word reader (first time only, about 10 MB)…");
+  let T;
+  try {
+    T = await loadTesseract();
+  } catch (e) {
+    setStatus("Could not load the word reader. Check the internet connection, or type the text below.", "err");
+    return;
+  }
+  let all = "";
+  for (let i = 0; i < shots.length; i++) {
+    setStatusWork("Reading picture " + (i + 1) + " of " + shots.length + "…");
+    try {
+      const { data } = await T.recognize(shots[i], "eng");
+      all += (all ? "\n" : "") + (data.text || "");
+    } catch (e) {
+      setStatus("Picture " + (i + 1) + " could not be read. Try again in better light.", "err");
+      return;
+    }
+  }
+  const clean = all.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  document.getElementById("scanText").value = clean;
+  const words = clean.split(/\s+/).filter(Boolean).length;
+  setStatus("Read " + words + " words. Check the text, then build the rounds.", "");
+}
+
+/* ---------- build rounds: call DeepSeek directly with the user's own key ---------- */
+const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
+
+const ITEM_RULES = `You are an English-language item writer for Hong Kong primary schools.
+
+You will be given English text scanned from a textbook, worksheet or storybook page.
+Choose the ENGLISH VOCABULARY in that text that a P5-P6 learner (age 10-12) could
+plausibly get wrong, and write Word Doctor diagnostic items about them.
+
+Rules:
+1. Pick words that are genuinely tricky, not just long: near-synonyms used imprecisely
+   (hot / warm / boiling), word-family confusion (careless / carelessly / careful),
+   or a word that is grammatically fine but wrong in the real world.
+   Prefer words that ACTUALLY APPEAR in the supplied text.
+2. Each item is ONE learner-style sentence with ONE target word wrapped in
+   <span class='hl'>word</span>. Mostly correct, wrong in exactly one way.
+   - At least one item: grammatically correct but wrong in real-world meaning.
+   - At least one item: a word-family error.
+   - At least one item: the highlighted word is CORRECT and the error is elsewhere.
+   - VERY IMPORTANT: after you swap in the correct word, the WHOLE sentence must
+     read as natural English. Do not produce a sentence like "he was very worried
+     with worry" - that is redundant. Test every corrected sentence by reading it
+     as a whole before you keep it.
+   - The question must ask what is wrong with the highlighted word, NOT ask which
+     word to replace it with (a replacement question makes the correct option
+     reveal itself and breaks the four-option design).
+3. Four options, exactly one right. Distractors plausible, not silly.
+   Each option max 12 words, simple English.
+4. The AI comment: SIMPLE English, short sentences (max ~14 words each), then its
+   Traditional Chinese translation.
+   The Chinese MUST be written standard Chinese (shumianyu) in Traditional
+   characters, matching a Hong Kong Chinese textbook. NOT Cantonese.
+   Forbidden: 唔, 嘅, 呢個, 係, 咗, 喺, 哋, 佢, 睇, 識, 攞, 俾, 冇.
+   Use: 不, 的, 這個, 是, 了, 在, 們, 他/它, 看, 懂, 拿, 給, 沒有.
+5. The "why" explanation addresses the CLASS directly. Never write "the student".
+   Never write "AI is wrong" or "the AI missed this". Describe the SENTENCE, not
+   a person. State the English rule plainly. Do not use the word "diagnose".
+
+Return ONLY valid JSON, no markdown fence:
+{"items":[{"word":"","typeEn":"","sentence":"","qEn":"","opts":[{"en":""},{"en":""},{"en":""},{"en":""}],"key":0,"aiEn":"","aiZh":"","whyEn":"","whyZh":""}]}`;
+
+async function buildFromText() {
+  const text = document.getElementById("scanText").value.trim();
+  const key = getKey();
+
+  if (text.split(/\s+/).filter(Boolean).length < 12) {
+    setStatus("Read or type a little more text \u2014 at least about twelve words.", "err");
+    return;
+  }
+  if (!key) {
+    setStatus("No key saved. Press Restart, or reload the page to sign in again.", "err");
+    return;
+  }
+
+  const btn = document.getElementById("buildBtn");
+  btn.disabled = true;
+  setStatusWork("Writing the rounds from this text\u2026");
+
+  try {
+    const res = await fetch(DEEPSEEK_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + key
+      },
+      body: JSON.stringify({
+        model: "deepseek-chat",
+        messages: [
+          { role: "system", content: ITEM_RULES },
+          { role: "user", content:
+              "Learner level: P5 (Hong Kong primary).\nWrite exactly 6 items.\n\n" +
+              "Text scanned from the material:\n-----\n" + text + "\n-----\n\nReturn the JSON now." }
+        ],
+        temperature: 0.8,
+        max_tokens: 4000,
+        response_format: { type: "json_object" }
+      })
+    });
+
+    if (res.status === 401) throw new Error("the key was rejected (401). Check the key.");
+    if (res.status === 402) throw new Error("no credit left on this key (402).");
+    if (!res.ok) throw new Error("the service replied " + res.status);
+
+    const payload = await res.json();
+    const raw = JSON.parse(payload.choices[0].message.content);
+    const items = (raw.items || []).filter(function (it) {
+      return it && it.word && Array.isArray(it.opts) && it.opts.length === 4 &&
+             typeof it.key === "number" && it.key >= 0 && it.key <= 3 &&
+             it.sentence && it.qEn && it.aiEn && it.aiZh && it.whyEn && it.whyZh;
+    }).slice(0, 6);
+
+    if (!items.length) throw new Error("no usable rounds came back. Try again.");
+
+    ITEMS.length = 0;
+    items.forEach(function (it) { ITEMS.push(it); });
+
+    setStatus("Built " + items.length + " rounds. Starting\u2026", "");
+    stopCam();
+    setTimeout(function () { startActivity("full"); }, 600);
+
+  } catch (e) {
+    let msg = String(e.message || e);
+    if (msg.indexOf("Failed to fetch") !== -1) {
+      msg = "could not reach the service. Check the internet connection.";
+    }
+    setStatus("Could not build the rounds: " + msg, "err");
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 document.addEventListener("keydown", e => {

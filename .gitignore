@@ -1,0 +1,6 @@
+# Ignore local-only server bits and test artifacts
+server/
+_*.py
+_*.js
+_*.png
+_*.json
