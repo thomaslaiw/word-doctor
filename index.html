@@ -1063,35 +1063,41 @@ function prepareImage(dataUrl, maxDim, quality) {
 }
 
 async function readPageWithVision(dataUrl, key) {
-  const small = await prepareImage(dataUrl, 2000, 0.92);
+  const small = await prepareImage(dataUrl, 1600, 0.92);
 
-  const body = {
-    model: VISION_MODEL,
-    messages: [{
-      role: "user",
-      content: [
-        { type: "text", text:
-          "Read all the printed English text in this photograph of a page.\n" +
-          "Return ONLY the text, line by line, exactly as printed.\n" +
-          "Rules:\n" +
-          "- Keep the original spelling, even if a word looks like a learner error. Do not correct it.\n" +
-          "- Do not add headings, notes, or explanations of your own.\n" +
-          "- If a word is unreadable, write [unclear] instead of guessing.\n" +
-          "- Ignore page numbers, watermarks and handwriting." },
-        { type: "image_url", image_url: { url: small } },
-      ],
-    }],
-    // deepseek-flash is a reasoning model: it spends tokens thinking before it
-    // writes anything. A small budget gets consumed entirely by reasoning and
-    // returns an EMPTY string with finish_reason "length". Give it real room.
-    max_tokens: 8000,
-    temperature: 0,
-  };
+  const ASK =
+    "Read all the printed English text in this photograph of a page.\n" +
+    "Return ONLY the text, line by line, exactly as printed.\n" +
+    "Rules:\n" +
+    "- Keep the original spelling, even if a word looks like a learner error. Do not correct it.\n" +
+    "- Do not add headings, notes, or explanations of your own.\n" +
+    "- If a word is unreadable, write [unclear] instead of guessing.\n" +
+    "- Ignore page numbers, watermarks and handwriting.";
 
-  const res = await fetch(VISION_URL, {
+  function bodyFor(imageUrl) {
+    return {
+      model: VISION_MODEL,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: ASK },
+          { type: "image_url", image_url: { url: imageUrl } },
+        ],
+      }],
+      // deepseek-flash is a reasoning model. It spends thousands of tokens
+      // thinking before it writes a single character, and the amount varies a
+      // lot between images (measured 2.4k-4.6k on the same photo). If the budget
+      // runs out during reasoning the reply is EMPTY with finish_reason
+      // "length" - so give it plenty of room.
+      max_tokens: 16000,
+      temperature: 0,
+    };
+  }
+
+  let res = await fetch(VISION_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", "Authorization": "Bearer " + key },
-    body: JSON.stringify(body),
+    body: JSON.stringify(bodyFor(small)),
   });
 
   if (res.status === 401) throw new Error("the key was rejected (401)");
