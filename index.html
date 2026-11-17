@@ -1275,11 +1275,9 @@ async function buildFromText() {
 
   const btn = document.getElementById("buildBtn");
   btn.disabled = true;
-  setStatusWork("Writing the rounds from this text\u2026");
-
   const engine = quizEngine();
   setStatusWork("Writing the rounds from this text with " +
-                (engine === "claude" ? "Claude Sonnet 5.5" : "DeepSeek") + "\u2026");
+                (engine === "grok" ? "Grok 4.3" : "DeepSeek") + "\u2026");
 
   try {
     const userMsg =
