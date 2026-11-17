@@ -311,15 +311,15 @@
            font-family:Consolas,monospace;font-size:14px"
            onkeydown="if(event.key==='Enter')document.getElementById('gateClaude').focus()">
 
-    <input id="gateClaude" type="password" placeholder="Anthropic API key (sk-ant-...)  - optional"
+    <input id="gateClaude" type="password" placeholder="OpenRouter API key (sk-or-...)  - optional"
            autocomplete="off" style="margin-top:8px;letter-spacing:0;text-align:left;
            font-family:Consolas,monospace;font-size:14px"
            onkeydown="if(event.key==='Enter')tryGate()">
 
     <p class="gatehint">
       <b>DeepSeek</b> is required: it reads the photographed page.<br>
-      <b>Anthropic</b> is optional: if given, the six rounds are written by
-      Claude Sonnet 5.5 instead of DeepSeek. Leave it empty to use DeepSeek for both.
+      <b>OpenRouter</b> is optional: if given, the six rounds are written by
+      <b>Grok 4.3</b> instead of DeepSeek. Leave it empty to use DeepSeek for both.
     </p>
     <button id="gateBtn" onclick="tryGate()">Open</button>
 
@@ -868,7 +868,7 @@ function getClaudeKey() {
 
 // Which model writes the rounds. Claude when its key is present, else DeepSeek.
 function quizEngine() {
-  return getClaudeKey() ? "claude" : "deepseek";
+  return getClaudeKey() ? "grok" : "deepseek";
 }
 
 async function tryGate() {
@@ -886,8 +886,8 @@ async function tryGate() {
   }
 
   const claude = document.getElementById("gateClaude").value.trim();
-  if (claude && !/^sk-ant-[A-Za-z0-9\-_]{16,}$/.test(claude)) {
-    err.textContent = "That does not look like an Anthropic key (it starts with sk-ant-). Leave it empty to use DeepSeek.";
+  if (claude && !/^sk-or-v1-[A-Za-z0-9\-_]{16,}$/.test(claude)) {
+    err.textContent = "That does not look like an OpenRouter key (it starts with sk-or-v1-). Leave it empty to use DeepSeek.";
     return;
   }
 
@@ -909,7 +909,7 @@ function paintKeyState() {
     el.style.color = "var(--warn)";
     return;
   }
-  const engine = quizEngine() === "claude" ? "Claude Sonnet 5.5" : "DeepSeek";
+  const engine = quizEngine() === "grok" ? "Grok 4.3" : "DeepSeek";
   el.textContent = "reading: DeepSeek \u00b7 rounds: " + engine;
   el.style.color = "var(--good)";
 }
@@ -1206,7 +1206,8 @@ async function runOCR() {
 /* ---------- build rounds: call DeepSeek directly with the user's own key ---------- */
 const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 
-const CLAUDE_MODEL = "claude-sonnet-5-5";
+const GROK_MODEL = "x-ai/grok-4.3";
+const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 // Models sometimes wrap JSON in a markdown fence. Strip it before parsing.
 function parseJsonLoose(txt) {
@@ -1287,37 +1288,49 @@ async function buildFromText() {
 
     let raw;
 
-    if (engine === "claude") {
-      // Anthropic Messages API. Text only - Claude never sees the photograph.
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+    if (engine === "grok") {
+      // OpenRouter, OpenAI-compatible. Text only - the page image never goes here.
+      const res = await fetch(OPENROUTER_URL, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-api-key": getClaudeKey(),
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true",
+          "Authorization": "Bearer " + getClaudeKey(),
+          "HTTP-Referer": location.origin + "/word-doctor/",
+          "X-Title": "Word Doctor",
         },
         body: JSON.stringify({
-          model: CLAUDE_MODEL,
-          max_tokens: 4000,
+          model: GROK_MODEL,
+          messages: [
+            { role: "system", content: ITEM_RULES },
+            { role: "user", content: userMsg }
+          ],
           temperature: 0.8,
-          system: ITEM_RULES,
-          messages: [{ role: "user", content: userMsg }],
+          max_tokens: 8000,
         }),
       });
 
-      if (res.status === 401) throw new Error("the Anthropic key was rejected (401).");
-      if (res.status === 403) throw new Error("this Anthropic key is not allowed to call the model (403).");
-      if (res.status === 429) throw new Error("Anthropic is rate limiting (429). Wait a moment and try again.");
+      if (res.status === 401) throw new Error("the OpenRouter key was rejected (401).");
+      if (res.status === 402) throw new Error("no credit left on this OpenRouter key (402).");
+      if (res.status === 403) {
+        throw new Error("this model is blocked for your region or account (403). " +
+                        "Leave the OpenRouter slot empty to use DeepSeek instead.");
+      }
+      if (res.status === 429) throw new Error("OpenRouter is rate limiting (429). Wait a moment.");
       if (!res.ok) {
         let detail = "";
         try { detail = (await res.json()).error.message; } catch (e) {}
-        throw new Error("Anthropic replied " + res.status + (detail ? ": " + detail : ""));
+        throw new Error("OpenRouter replied " + res.status + (detail ? ": " + detail : ""));
       }
 
       const payload = await res.json();
-      const block = (payload.content || []).filter(function (c) { return c.type === "text"; })[0];
-      raw = parseJsonLoose(block ? block.text : "");
+      const choice = (payload.choices && payload.choices[0]) || {};
+      const txt = (choice.message && choice.message.content) || "";
+      if (!txt.trim()) {
+        throw new Error(choice.finish_reason === "length"
+          ? "the model ran out of room before answering. Try again."
+          : "the model returned nothing. Try again.");
+      }
+      raw = parseJsonLoose(txt);
 
     } else {
       const res = await fetch(DEEPSEEK_URL, {
