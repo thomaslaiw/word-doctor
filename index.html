@@ -901,19 +901,73 @@ function backToStart() {
 
 async function toggleCam() {
   if (stream) { stopCam(); return; }
+
   const video = document.getElementById("cam");
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1440 } }
-    });
-    video.srcObject = stream;
-    video.style.display = "block";
-    document.getElementById("videoPh").style.display = "none";
-    document.getElementById("camBtn").textContent = "Stop camera";
-    document.getElementById("shotBtn").style.display = "";
-  } catch (e) {
-    setStatus("Camera not available. You can type or paste the text instead.", "err");
+  const ph = document.getElementById("videoPh");
+
+  // 1. Is this page allowed to use a camera at all?
+  if (!window.isSecureContext) {
+    setStatus("The camera needs a secure page (https). Open the site from its web address, not a saved file.", "err");
+    return;
   }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    setStatus("This browser does not offer camera access. Try Chrome or Edge, on the web address.", "err");
+    return;
+  }
+
+  setStatusWork("Asking for the camera\u2026");
+  try {
+    // Ask simply. Constraint-heavy requests fail on many laptop cameras.
+    stream = await navigator.mediaDevices.getUserMedia({ video: true });
+  } catch (e) {
+    const n = (e && e.name) || "";
+    let msg;
+    if (n === "NotAllowedError" || n === "SecurityError") {
+      msg = "The camera was blocked. Click the camera icon in the address bar and allow it, then press Start camera again.";
+    } else if (n === "NotFoundError" || n === "OverconstrainedError") {
+      msg = "No camera was found on this device. Use Build the rounds from typed text instead.";
+    } else if (n === "NotReadableError" || n === "TrackStartError") {
+      msg = "The camera is being used by another program. Close it, then try again.";
+    } else {
+      msg = "The camera could not start (" + (n || "unknown error") + "). You can type the text instead.";
+    }
+    setStatus(msg, "err");
+    return;
+  }
+
+  // 2. Attach and actually start playback. Without play() many browsers
+  //    show a black frame forever.
+  video.srcObject = stream;
+  video.style.display = "block";
+  if (ph) ph.style.display = "none";
+
+  try {
+    await video.play();
+  } catch (e) {
+    // Safari and some mobile browsers reject play() until muted+playsinline
+    video.muted = true;
+    try { await video.play(); } catch (e2) { /* ignored, frames may still arrive */ }
+  }
+
+  // 3. Wait for real frames before declaring success.
+  const gotFrames = await new Promise(function (resolve) {
+    if (video.videoWidth > 0) return resolve(true);
+    let done = false;
+    const finish = function (ok) { if (!done) { done = true; resolve(ok); } };
+    video.addEventListener("loadedmetadata", function () { finish(video.videoWidth > 0); }, { once: true });
+    video.addEventListener("canplay", function () { finish(video.videoWidth > 0); }, { once: true });
+    setTimeout(function () { finish(video.videoWidth > 0); }, 4000);
+  });
+
+  if (!gotFrames) {
+    setStatus("The camera opened but sent no picture. Check the lens cover or the camera privacy switch, then try again.", "err");
+    stopCam();
+    return;
+  }
+
+  document.getElementById("camBtn").textContent = "Stop camera";
+  document.getElementById("shotBtn").style.display = "";
+  setStatus("Camera ready. Fill the frame with the page, then press Take picture.", "");
 }
 
 function stopCam() {
