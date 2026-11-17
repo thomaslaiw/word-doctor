@@ -239,6 +239,11 @@
     cursor:pointer;font-family:inherit;
   }
   #gate .err{color:var(--bad);font-size:13.5px;margin-top:10px;min-height:18px;}
+  #gate .gatehint{
+    margin:12px 0 0;padding:10px 12px;background:#eef3f7;border-radius:7px;
+    font-size:12.5px;line-height:1.55;text-align:left;color:#43566a;
+  }
+  #gate .gatehint b{color:var(--accent);}
 
   /* ---------- scanner ---------- */
   .scanwrap{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
@@ -301,17 +306,27 @@
     <input id="gatePw" type="password" placeholder="class password"
            autocomplete="off"
            onkeydown="if(event.key==='Enter')document.getElementById('gateKey').focus()">
-    <input id="gateKey" type="password" placeholder="DeepSeek API key (sk-...)"
+    <input id="gateKey" type="password" placeholder="DeepSeek API key (sk-...)  - required"
            autocomplete="off" style="margin-top:10px;letter-spacing:0;text-align:left;
            font-family:Consolas,monospace;font-size:14px"
-           onkeydown="if(event.key==='Enter')tryGate()">
-    <button onclick="tryGate()">Open</button>
+           onkeydown="if(event.key==='Enter')document.getElementById('gateClaude').focus()">
 
-    <p style="margin:14px 0 0;font-size:12.5px;line-height:1.5;text-align:left;">
-      The key is used only by this page, in your own browser, to write rounds.
-      It is never sent to us and never stored on any server.
-      Get a key at <a href="https://platform.deepseek.com/api_keys" target="_blank"
-      rel="noopener" style="color:var(--accent)">platform.deepseek.com</a>.
+    <input id="gateClaude" type="password" placeholder="Anthropic API key (sk-ant-...)  - optional"
+           autocomplete="off" style="margin-top:8px;letter-spacing:0;text-align:left;
+           font-family:Consolas,monospace;font-size:14px"
+           onkeydown="if(event.key==='Enter')tryGate()">
+
+    <p class="gatehint">
+      <b>DeepSeek</b> is required: it reads the photographed page.<br>
+      <b>Anthropic</b> is optional: if given, the six rounds are written by
+      Claude Sonnet 5.5 instead of DeepSeek. Leave it empty to use DeepSeek for both.
+    </p>
+    <button id="gateBtn" onclick="tryGate()">Open</button>
+
+
+    <p style="margin:12px 0 0;font-size:12.5px;line-height:1.5;text-align:left;color:var(--muted)">
+      Keys are used only by this page, in your own browser. They are never sent to us
+      and never stored on any server.
     </p>
 
     <div class="err" id="gateErr"></div>
@@ -847,6 +862,15 @@ function getKey() {
   return localStorage.getItem("wd_key") || "";
 }
 
+function getClaudeKey() {
+  return localStorage.getItem("wd_claude_key") || "";
+}
+
+// Which model writes the rounds. Claude when its key is present, else DeepSeek.
+function quizEngine() {
+  return getClaudeKey() ? "claude" : "deepseek";
+}
+
 async function tryGate() {
   const pw  = document.getElementById("gatePw").value.trim();
   const key = document.getElementById("gateKey").value.trim();
@@ -861,7 +885,16 @@ async function tryGate() {
     return;
   }
 
+  const claude = document.getElementById("gateClaude").value.trim();
+  if (claude && !/^sk-ant-[A-Za-z0-9\-_]{16,}$/.test(claude)) {
+    err.textContent = "That does not look like an Anthropic key (it starts with sk-ant-). Leave it empty to use DeepSeek.";
+    return;
+  }
+
   localStorage.setItem("wd_key", key);
+  if (claude) localStorage.setItem("wd_claude_key", claude);
+  else localStorage.removeItem("wd_claude_key");
+
   sessionStorage.setItem("wd_open", "1");
   document.getElementById("gate").style.display = "none";
   paintKeyState();
@@ -871,15 +904,22 @@ function paintKeyState() {
   const el = document.getElementById("keyState");
   if (!el) return;
   const k = getKey();
-  el.textContent = k ? "key saved (" + k.slice(0, 6) + "\u2026" + k.slice(-4) + ")" : "no key saved";
-  el.style.color = k ? "var(--good)" : "var(--warn)";
+  if (!k) {
+    el.textContent = "no key saved";
+    el.style.color = "var(--warn)";
+    return;
+  }
+  const engine = quizEngine() === "claude" ? "Claude Sonnet 5.5" : "DeepSeek";
+  el.textContent = "reading: DeepSeek \u00b7 rounds: " + engine;
+  el.style.color = "var(--good)";
 }
 
 /* ---------- key state ---------- */
 function forgetKey() {
   localStorage.removeItem("wd_key");
+  localStorage.removeItem("wd_claude_key");
   paintKeyState();
-  setStatus("Key removed from this browser.", "");
+  setStatus("Keys removed from this browser.", "");
 }
 
 /* ---------- camera ---------- */
@@ -1166,6 +1206,21 @@ async function runOCR() {
 /* ---------- build rounds: call DeepSeek directly with the user's own key ---------- */
 const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 
+const CLAUDE_MODEL = "claude-sonnet-5-5";
+
+// Models sometimes wrap JSON in a markdown fence. Strip it before parsing.
+function parseJsonLoose(txt) {
+  let t = (txt || "").trim();
+  const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fence) t = fence[1].trim();
+  const first = t.indexOf("{");
+  const last = t.lastIndexOf("}");
+  if (first > 0 || last < t.length - 1) {
+    if (first !== -1 && last > first) t = t.slice(first, last + 1);
+  }
+  return JSON.parse(t);
+}
+
 const ITEM_RULES = `You are an English-language item writer for Hong Kong primary schools.
 
 You will be given English text scanned from a textbook, worksheet or storybook page.
@@ -1221,33 +1276,75 @@ async function buildFromText() {
   btn.disabled = true;
   setStatusWork("Writing the rounds from this text\u2026");
 
+  const engine = quizEngine();
+  setStatusWork("Writing the rounds from this text with " +
+                (engine === "claude" ? "Claude Sonnet 5.5" : "DeepSeek") + "\u2026");
+
   try {
-    const res = await fetch(DEEPSEEK_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": "Bearer " + key
-      },
-      body: JSON.stringify({
-        model: "deepseek-chat",
-        messages: [
-          { role: "system", content: ITEM_RULES },
-          { role: "user", content:
-              "Learner level: P5 (Hong Kong primary).\nWrite exactly 6 items.\n\n" +
-              "Text scanned from the material:\n-----\n" + text + "\n-----\n\nReturn the JSON now." }
-        ],
-        temperature: 0.8,
-        max_tokens: 4000,
-        response_format: { type: "json_object" }
-      })
-    });
+    const userMsg =
+      "Learner level: P5 (Hong Kong primary).\nWrite exactly 6 items.\n\n" +
+      "Text scanned from the material:\n-----\n" + text + "\n-----\n\nReturn the JSON now.";
 
-    if (res.status === 401) throw new Error("the key was rejected (401). Check the key.");
-    if (res.status === 402) throw new Error("no credit left on this key (402).");
-    if (!res.ok) throw new Error("the service replied " + res.status);
+    let raw;
 
-    const payload = await res.json();
-    const raw = JSON.parse(payload.choices[0].message.content);
+    if (engine === "claude") {
+      // Anthropic Messages API. Text only - Claude never sees the photograph.
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": getClaudeKey(),
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body: JSON.stringify({
+          model: CLAUDE_MODEL,
+          max_tokens: 4000,
+          temperature: 0.8,
+          system: ITEM_RULES,
+          messages: [{ role: "user", content: userMsg }],
+        }),
+      });
+
+      if (res.status === 401) throw new Error("the Anthropic key was rejected (401).");
+      if (res.status === 403) throw new Error("this Anthropic key is not allowed to call the model (403).");
+      if (res.status === 429) throw new Error("Anthropic is rate limiting (429). Wait a moment and try again.");
+      if (!res.ok) {
+        let detail = "";
+        try { detail = (await res.json()).error.message; } catch (e) {}
+        throw new Error("Anthropic replied " + res.status + (detail ? ": " + detail : ""));
+      }
+
+      const payload = await res.json();
+      const block = (payload.content || []).filter(function (c) { return c.type === "text"; })[0];
+      raw = parseJsonLoose(block ? block.text : "");
+
+    } else {
+      const res = await fetch(DEEPSEEK_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + key
+        },
+        body: JSON.stringify({
+          model: "deepseek-chat",
+          messages: [
+            { role: "system", content: ITEM_RULES },
+            { role: "user", content: userMsg }
+          ],
+          temperature: 0.8,
+          max_tokens: 4000,
+          response_format: { type: "json_object" }
+        })
+      });
+
+      if (res.status === 401) throw new Error("the key was rejected (401). Check the key.");
+      if (res.status === 402) throw new Error("no credit left on this key (402).");
+      if (!res.ok) throw new Error("the service replied " + res.status);
+
+      const payload = await res.json();
+      raw = parseJsonLoose(payload.choices[0].message.content);
+    }
     const items = (raw.items || []).filter(function (it) {
       return it && it.word && Array.isArray(it.opts) && it.opts.length === 4 &&
              typeof it.key === "number" && it.key >= 0 && it.key <= 3 &&
