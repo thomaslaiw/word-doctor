@@ -1016,39 +1016,54 @@ function setStatusWork(msg) {
 const VISION_MODEL = "deepseek-flash";
 const VISION_URL = "https://api.deepseek.com/chat/completions";
 
-function shrinkImage(dataUrl, maxDim, quality) {
+function prepareImage(dataUrl, maxDim, quality) {
   return new Promise(function (resolve) {
     const img = new Image();
     img.onload = function () {
-      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
-      const w = Math.round(img.width * scale);
-      const h = Math.round(img.height * scale);
+      // Small photos are the common failure: fine print ends up a few pixels
+      // tall. Upscaling cannot invent detail, but it does give the model more
+      // pixels per glyph, which measurably helps.
+      let w = img.width, h = img.height;
+      const longest = Math.max(w, h);
+
+      if (longest < 1200) {
+        const k = Math.min(2.5, 1600 / longest);   // upscale small pictures
+        w = Math.round(w * k); h = Math.round(h * k);
+      } else if (longest > maxDim) {
+        const k = maxDim / longest;                // shrink very large ones
+        w = Math.round(w * k); h = Math.round(h * k);
+      }
+
       const c = document.createElement("canvas");
       c.width = w; c.height = h;
-
       const g = c.getContext("2d");
-      // light greyscale + contrast lift helps a dim photo before the model sees it
+      g.imageSmoothingEnabled = true;
+      g.imageSmoothingQuality = "high";
       g.drawImage(img, 0, 0, w, h);
+
+      // gentle contrast + unsharp, to lift dim or soft phone photos
       try {
         const d = g.getImageData(0, 0, w, h);
         const px = d.data;
+        const CON = 1.25, BRI = 8;
         for (let i = 0; i < px.length; i += 4) {
           let v = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
-          v = (v - 128) * 1.18 + 132;           // gentle contrast
+          v = (v - 128) * CON + 128 + BRI;
           v = v < 0 ? 0 : v > 255 ? 255 : v;
           px[i] = px[i + 1] = px[i + 2] = v;
         }
         g.putImageData(d, 0, 0);
-      } catch (e) { /* tainted canvas - fall back to the plain copy */ }
+      } catch (e) { /* tainted canvas - keep the plain copy */ }
 
       resolve(c.toDataURL("image/jpeg", quality || 0.92));
     };
+    img.onerror = function () { resolve(dataUrl); };
     img.src = dataUrl;
   });
 }
 
 async function readPageWithVision(dataUrl, key) {
-  const small = await shrinkImage(dataUrl, 1600, 0.92);
+  const small = await prepareImage(dataUrl, 2000, 0.92);
 
   const body = {
     model: VISION_MODEL,
@@ -1066,7 +1081,10 @@ async function readPageWithVision(dataUrl, key) {
         { type: "image_url", image_url: { url: small } },
       ],
     }],
-    max_tokens: 2000,
+    // deepseek-flash is a reasoning model: it spends tokens thinking before it
+    // writes anything. A small budget gets consumed entirely by reasoning and
+    // returns an EMPTY string with finish_reason "length". Give it real room.
+    max_tokens: 8000,
     temperature: 0,
   };
 
@@ -1081,8 +1099,18 @@ async function readPageWithVision(dataUrl, key) {
   if (!res.ok) throw new Error("the reader replied " + res.status);
 
   const payload = await res.json();
-  const text = (payload.choices && payload.choices[0] &&
-                payload.choices[0].message.content) || "";
+  const choice = (payload.choices && payload.choices[0]) || {};
+  const text = (choice.message && choice.message.content) || "";
+  const finish = choice.finish_reason || "";
+
+  if (!text.trim()) {
+    if (finish === "length") {
+      throw new Error("the reader ran out of room before writing anything. " +
+                      "Try a smaller or clearer picture.");
+    }
+    throw new Error("no words were found in this picture. " +
+                    "Move closer so the page fills the frame, and avoid glare.");
+  }
   return text.trim();
 }
 
