@@ -1217,7 +1217,7 @@ function parseJsonLoose(txt) {
    ======================================================================= */
 
 const WIKI_API = "https://simple.wikipedia.org/w/api.php";
-const WIKI_CACHE_KEY = "wd_corpus_v1";
+const WIKI_CACHE_KEY = "wd_corpus_v2";   // bumped: v1 cached unprocessed extracts
 
 // Topics that are safe and useful for a primary lesson. The app only ever
 // reads articles from this list, never a raw keyword search — searching
@@ -1258,6 +1258,14 @@ async function fetchArticle(title) {
   for (const k in pages) {
     if (pages[k].extract) { text = pages[k].extract; break; }
   }
+  // Simple Wikipedia extracts contain section markers such as
+  // "== Types ==" and "=== Rainstorm ===". Left in, these leak into a
+  // sentence and show up inside a quiz item.
+  text = text
+    .replace(/^=+\s*(.+?)\s*=+$/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
   if (text) {
     cache[title] = text;
     saveCache(cache);
@@ -1270,12 +1278,31 @@ function sentencesWith(text, word) {
   const out = [];
   const parts = text.split(/(?<=[.!?])\s+/);
   const re = new RegExp("\\b" + word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b", "i");
+
   for (let i = 0; i < parts.length; i++) {
     const s = parts[i].trim();
     if (!re.test(s)) continue;
+
     const words = s.split(/\s+/).length;
-    // keep sentences a P5 learner can actually read
-    if (words >= 6 && words <= 26) out.push(s);
+    if (words < 6 || words > 26) continue;
+
+    // Skip sentences that break when a word is substituted.
+    // A parenthetical like "(American English)" makes the sentence a claim
+    // ABOUT words; swapping the word then produces nonsense such as
+    // "A market (American English) ... is a place where ships shelter".
+    if (/[(\[]/.test(s)) continue;
+    // metalinguistic framing: the sentence talks about the word itself
+    if (/\b(spelling|spelled|spelt|pronounced|means? the word|is called|also called|known as)\b/i.test(s)) continue;
+    // quoted material and lists behave badly under substitution
+    if (/["\u201c\u201d]/.test(s)) continue;
+    // definitions that start "X is a ..." are usually too definitional
+    // to carry a clean semantic error once the subject is swapped
+    if (/^(A|An|The)\s+\w+\s+(is|are)\s+(a|an|the)\s/i.test(s) && /\bor\b/i.test(s)) continue;
+
+    // no leftover heading or markup artefacts (2+ equals, table pipes, templates)
+    if (/={2,}/.test(s) || /^\s*\|/.test(s) || /\{\{|\}\}/.test(s)) continue;
+
+    out.push(s);
   }
   return out;
 }
@@ -1531,7 +1558,9 @@ async function buildFromText() {
       return it && it.word && Array.isArray(it.opts) && it.opts.length === 4 &&
              typeof it.key === "number" && it.key >= 0 && it.key <= 3 &&
              it.sentence && it.qEn && it.aiEn && it.aiZh && it.whyEn && it.whyZh &&
-             it.sentence.indexOf("class='hl'") !== -1;
+             it.sentence.indexOf("class='hl'") !== -1 &&
+             !/[(\[]/.test(it.sentence) &&
+             !/={2,}/.test(it.sentence);
     });
 
     if (!items.length) throw new Error("no usable rounds came back. Try again.");
