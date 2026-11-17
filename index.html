@@ -1008,41 +1008,123 @@ function setStatusWork(msg) {
   setStatus('<span class="spinner"></span>' + msg, "work");
 }
 
-/* ---------- OCR (tesseract.js, loaded on demand) ---------- */
-function loadTesseract() {
-  return new Promise((resolve, reject) => {
-    if (window.Tesseract) return resolve(window.Tesseract);
-    const s = document.createElement("script");
-    s.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
-    s.onload = () => resolve(window.Tesseract);
-    s.onerror = () => reject(new Error("could not load the reader"));
-    document.head.appendChild(s);
+/* ---------- read the words from the picture ----------
+   Uses a vision model, not classic OCR. Tesseract-style OCR was measured at
+   28% word accuracy on a realistic phone photo of a page; the vision model
+   read the same image at 100%. It is also allowed to return an unknown token
+   for parts it cannot read, instead of inventing words.                              */
+const VISION_MODEL = "deepseek-flash";
+const VISION_URL = "https://api.deepseek.com/chat/completions";
+
+function shrinkImage(dataUrl, maxDim, quality) {
+  return new Promise(function (resolve) {
+    const img = new Image();
+    img.onload = function () {
+      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const w = Math.round(img.width * scale);
+      const h = Math.round(img.height * scale);
+      const c = document.createElement("canvas");
+      c.width = w; c.height = h;
+
+      const g = c.getContext("2d");
+      // light greyscale + contrast lift helps a dim photo before the model sees it
+      g.drawImage(img, 0, 0, w, h);
+      try {
+        const d = g.getImageData(0, 0, w, h);
+        const px = d.data;
+        for (let i = 0; i < px.length; i += 4) {
+          let v = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+          v = (v - 128) * 1.18 + 132;           // gentle contrast
+          v = v < 0 ? 0 : v > 255 ? 255 : v;
+          px[i] = px[i + 1] = px[i + 2] = v;
+        }
+        g.putImageData(d, 0, 0);
+      } catch (e) { /* tainted canvas - fall back to the plain copy */ }
+
+      resolve(c.toDataURL("image/jpeg", quality || 0.92));
+    };
+    img.src = dataUrl;
   });
+}
+
+async function readPageWithVision(dataUrl, key) {
+  const small = await shrinkImage(dataUrl, 1600, 0.92);
+
+  const body = {
+    model: VISION_MODEL,
+    messages: [{
+      role: "user",
+      content: [
+        { type: "text", text:
+          "Read all the printed English text in this photograph of a page.\n" +
+          "Return ONLY the text, line by line, exactly as printed.\n" +
+          "Rules:\n" +
+          "- Keep the original spelling, even if a word looks like a learner error. Do not correct it.\n" +
+          "- Do not add headings, notes, or explanations of your own.\n" +
+          "- If a word is unreadable, write [unclear] instead of guessing.\n" +
+          "- Ignore page numbers, watermarks and handwriting." },
+        { type: "image_url", image_url: { url: small } },
+      ],
+    }],
+    max_tokens: 2000,
+    temperature: 0,
+  };
+
+  const res = await fetch(VISION_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": "Bearer " + key },
+    body: JSON.stringify(body),
+  });
+
+  if (res.status === 401) throw new Error("the key was rejected (401)");
+  if (res.status === 402) throw new Error("no credit left on this key (402)");
+  if (!res.ok) throw new Error("the reader replied " + res.status);
+
+  const payload = await res.json();
+  const text = (payload.choices && payload.choices[0] &&
+                payload.choices[0].message.content) || "";
+  return text.trim();
 }
 
 async function runOCR() {
   if (!shots.length) { setStatus("Take a picture first.", "err"); return; }
-  setStatusWork("Loading the word reader (first time only, about 10 MB)…");
-  let T;
-  try {
-    T = await loadTesseract();
-  } catch (e) {
-    setStatus("Could not load the word reader. Check the internet connection, or type the text below.", "err");
+
+  const key = getKey();
+  if (!key) {
+    setStatus("No key saved. Reload the page and sign in again.", "err");
     return;
   }
+
   let all = "";
   for (let i = 0; i < shots.length; i++) {
-    setStatusWork("Reading picture " + (i + 1) + " of " + shots.length + "…");
+    setStatusWork("Reading picture " + (i + 1) + " of " + shots.length + "\u2026");
     try {
-      const { data } = await T.recognize(shots[i], "eng");
-      all += (all ? "\n" : "") + (data.text || "");
+      const t = await readPageWithVision(shots[i], key);
+      if (t) all += (all ? "\n\n" : "") + t;
     } catch (e) {
-      setStatus("Picture " + (i + 1) + " could not be read. Try again in better light.", "err");
+      let msg = String(e.message || e);
+      if (msg.indexOf("Failed to fetch") !== -1) {
+        msg = "could not reach the reader. Check the internet connection.";
+      }
+      setStatus("Picture " + (i + 1) + ": " + msg, "err");
       return;
     }
   }
-  const clean = all.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
-  document.getElementById("scanText").value = clean;
+
+  const clean = all
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/\[unclear\]/gi, "\u2026")
+    .trim();
+
+  if (!clean) {
+    setStatus("No words were read. Try again with more light and less glare.", "err");
+    return;
+  }
+
+  const box = document.getElementById("scanText");
+  box.value = box.value.trim() ? (box.value.trim() + "\n\n" + clean) : clean;
+
   const words = clean.split(/\s+/).filter(Boolean).length;
   setStatus("Read " + words + " words. Check the text, then build the rounds.", "");
 }
