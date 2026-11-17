@@ -689,7 +689,11 @@ function renderRound() {
   picked = null; locked = false; revealedAI = false;
 
   $("roundNo").textContent = `Round ${idx + 1} of ${queue.length}`;
-  $("targetWord").textContent = it.word;
+  // Show the word that is actually highlighted. For a swapped item the
+  // model's `word` field can still hold the original source word, which would
+  // hand the class the answer.
+  const hlMatch = String(it.sentence || "").match(/<span class='hl'>(.*?)<\/span>/);
+  $("targetWord").textContent = hlMatch ? hlMatch[1] : it.word;
   $("roundType").textContent = it.typeEn;
   $("sentence").innerHTML = "\u201C" + it.sentence + "\u201D";
   $("promptQ").textContent = it.qEn;
@@ -1508,7 +1512,9 @@ async function buildFromText() {
       "   Never Cantonese particles: \u5514 \u5605 \u5580 \u5599 \u54cb \u4f62 \u7747 \u8b58 \u651e \u4ffe \u5187.\n" +
       "8. whyEn / whyZh address the class directly. Never say 'the student'.\n" +
       "9. Before answering, test your own item: read the sentence as a learner. If the wrong word\n" +
-      "   is not really wrong, change your answer to KIND B.\n\n" +
+      "   is not really wrong, change your answer to KIND B.\n" +
+      "10. qEn must be exactly: \"What is wrong with the highlighted word?\"\n" +
+      "    Do not write a question asking which sentence is correct.\n\n" +
       "Reply with JSON only:\n" +
       "{\"items\":[{\"word\":\"\",\"typeEn\":\"\",\"sentence\":\"\",\"qEn\":\"\",\"opts\":[{\"en\":\"\"},{\"en\":\"\"},{\"en\":\"\"},{\"en\":\"\"}],\"key\":0,\"aiEn\":\"\",\"aiZh\":\"\",\"whyEn\":\"\",\"whyZh\":\"\",\"kind\":\"A\"}]}\n\n" +
       "Sentences:\n" + JSON.stringify(sourceList, null, 1);
